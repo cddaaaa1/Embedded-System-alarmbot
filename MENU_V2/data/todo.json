@@ -1,0 +1,8 @@
+{
+    "todos": [
+      { "text": "Buy milk", "done": false },
+      { "text": "Learn Arduino", "done": true },
+      { "text": "Walk the dog", "done": false }
+    ]
+  }
+  

@@ -64,17 +64,21 @@ def sync_reminder():
     data = request.json
     reminders = load_reminders()
     
-    # Find the task and update its state
     task_found = False
     for todo in reminders["todos"]:
         if todo["text"] == data["text"]:
-            todo["done"] = data["done"]
-            task_found = True
+            if data["last_updated"] > todo.get("last_updated", 0):
+                todo["done"] = data["done"]
+                todo["last_updated"] = data["last_updated"]
+                task_found = True
             break
 
-    # If the task doesn't exist, add it (for ESP32 updates)
     if not task_found:
-        reminders["todos"].append({"text": data["text"], "done": data["done"]})
+        reminders["todos"].append({
+            "text": data["text"],
+            "done": data["done"],
+            "last_updated": data["last_updated"]
+        })
 
     save_reminders(reminders)
     return jsonify({"message": "Reminder synchronized", "todos": reminders["todos"]})

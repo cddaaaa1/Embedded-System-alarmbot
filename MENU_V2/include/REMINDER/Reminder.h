@@ -18,6 +18,8 @@
 // JSON File Path
 #define TODO_FILE "/todo.json"
 
+extern long currentTimestamp;
+
 // Function Prototypes
 void connectWiFi();
 void completeReminder(String task);

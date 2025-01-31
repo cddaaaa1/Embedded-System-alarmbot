@@ -2,5 +2,13 @@
     {
         "task": "eat dinner",
         "status": "completed"
+    },
+    {
+        "task": "shower",
+        "status": "completed"
+    },
+    {
+        "task": "sleep",
+        "status": "completed"
     }
 ]

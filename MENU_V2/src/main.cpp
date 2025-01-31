@@ -1,26 +1,10 @@
-#include <Arduino.h>
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
-
-#include "MENU/StateMachine.h"
-#include "MENU/DisplayManager.h"
-
-#include <WiFi.h>      // ESP32 Wi-Fi库
-#include <time.h>      // time.h 库 (ESP32内置)
 #include <WiFi.h>
-#include <ArduinoWebsockets.h>
-#include <ArduinoJson.h>
 #include <HTTPClient.h>
+#include <ArduinoJson.h>
 
 #define WIFI_SSID "VM0459056"
 #define WIFI_PASSWORD "p6zTqmm6vxqc"
 #define SERVER_URL "http://192.168.0.27:5000"
-#define WEBSOCKET_URL "ws://192.168.0.27:8080"  // WebSocket URL
-
-using namespace websockets;
-
-WebsocketsClient client;
 
 void connectWiFi() {
     Serial.print("Connecting to WiFi...");
@@ -32,7 +16,7 @@ void connectWiFi() {
     Serial.println("\nConnected to WiFi!");
 }
 
-// Function to notify the server that a task is completed
+// Function to mark a reminder as completed
 void completeReminder(String task) {
     if (WiFi.status() == WL_CONNECTED) {
         HTTPClient http;
@@ -47,7 +31,7 @@ void completeReminder(String task) {
 
         int httpResponseCode = http.POST(payload);
         if (httpResponseCode == 200) {
-            Serial.println("Task completed: " + task);
+            Serial.println("Task marked as completed: " + task);
         } else {
             Serial.println("Failed to update task. HTTP Response Code: " + String(httpResponseCode));
         }
@@ -55,46 +39,62 @@ void completeReminder(String task) {
     }
 }
 
-// WebSocket event handler
-void onMessage(WebsocketsMessage message) {
-    Serial.println("New Reminder Received: " + message.data());
+// Function to get reminders from the server
+void getReminders() {
+    if (WiFi.status() == WL_CONNECTED) {
+        HTTPClient http;
+        http.begin(String(SERVER_URL) + "/get_reminders");
+        int httpResponseCode = http.GET();
 
-    // Parse JSON reminder
-    DynamicJsonDocument doc(200);
-    deserializeJson(doc, message.data());
-    String task = doc["task"];
+        if (httpResponseCode == 200) {
+            String response = http.getString();
+            Serial.println("Reminders: " + response);
 
-    // Simulate executing the task
-    Serial.println("Executing Task: " + task);
-    delay(5000);  // Simulate execution
+            DynamicJsonDocument doc(1024);
+            deserializeJson(doc, response);
 
-    // Notify server task is completed
-    completeReminder(task);
+            for (JsonVariant reminder : doc.as<JsonArray>()) {
+                String task = reminder["task"];
+                String status = reminder["status"];
+
+                if (status == "pending") {
+                    Serial.println("Pending Reminder: " + task);
+                }
+            }
+        } else {
+            Serial.println("Error fetching reminders. HTTP Response Code: " + String(httpResponseCode));
+        }
+        http.end();
+    }
 }
 
-// Connect WebSocket
-void connectWebSocket() {
-    Serial.print("🔄 Attempting WebSocket connection to: ");
-    Serial.println(WEBSOCKET_URL);
+// Function to read user input from serial monitor and mark the task as complete
+void readSerialInput() {
+    if (Serial.available() > 0) {
+        String input = Serial.readStringUntil('\n'); // Read input until newline
+        input.trim(); // Remove any trailing newline or spaces
 
-    if (client.connect(WEBSOCKET_URL)) {
-        Serial.println("✅ WebSocket Connected!");
-        client.onMessage(onMessage);
-    } else {
-        Serial.println("❌ WebSocket Connection Failed. Retrying in 5s...");
-        delay(5000);
-        connectWebSocket();
+        if (input.startsWith("done ")) {
+            String task = input.substring(5); // Extract task name after "done "
+            if (task.length() > 0) {
+                Serial.println("User input received: Marking task as complete -> " + task);
+                completeReminder(task);
+            } else {
+                Serial.println("Error: No task name provided.");
+            }
+        } else {
+            Serial.println("Invalid input format. Use: done TASK_NAME");
+        }
     }
 }
 
 void setup() {
     Serial.begin(115200);
     connectWiFi();
-    connectWebSocket();
 }
 
 void loop() {
-    if (client.available()) {
-        client.poll();
-    }
+    getReminders();
+    readSerialInput();  // Check for user input from serial
+    delay(5000);  // Check every 5 seconds
 }

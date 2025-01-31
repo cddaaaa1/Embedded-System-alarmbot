@@ -6,75 +6,108 @@
 #include "MENU/StateMachine.h"
 #include "MENU/DisplayManager.h"
 
-#include <WiFi.h>      // ESP32 Wi-Fi库
-#include <time.h>      // time.h 库 (ESP32内置)
+#include <WiFi.h> // ESP32 Wi-Fi库
+#include <time.h> // time.h 库 (ESP32内置)
+#include <WiFi.h>
+#include <WebSocketsClient.h>
+#include <ArduinoJson.h>
 
-// const char* ssid     = "201WI-FI";
-// const char* password = "123456789";
-const char* ssid     = "VM0459056";
+const char* ssid = "VM0459056";
 const char* password = "p6zTqmm6vxqc";
-// 2) 时区和夏令时设置
-//    例如：中国一般是UTC+8，不用夏令时 => gmtOffset=8小时，daylightOffset=0
-//    若你在其他时区，请自行调整。
+const char* serverIP = "192.168.0.27"; // Replace with your PC's local IP
+const int serverPort = 8765;            // WebSocket server port
 
-const long gmtOffset_sec = 0;         // 英国 GMT+0
-const int daylightOffset_sec = 3600; // 英国夏令时偏移为 +1 小时
-// 3) NTP服务器地址，可用"pool.ntp.org"或地区服务器
-const char* ntpServer = "pool.ntp.org";
+WebSocketsClient webSocket;
+String reminders[10]; // Store up to 10 reminders
+int taskCount = 0;    // Track active reminders
+bool isConnected = false;
 
-int currentHour   = 0;
-int currentMinute = 0;
-int currentSecond = 0;
+void parseReminders(String jsonResponse)
+{
+    DynamicJsonDocument doc(1024);
+    deserializeJson(doc, jsonResponse);
+    JsonArray reminderArray = doc["reminders"];
 
-void setup() {
-  Serial.begin(115200);
-  // 连接WiFi
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid, password);
-  Serial.printf("Connecting to WiFi: %s\n", ssid);
-
-  // 等待WiFi连上
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println("\nWiFi connected!");
-
-  // 使用configTime函数设置时区和NTP服务器
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-
-  // 检查是否成功获取时间
-  struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) {
-    Serial.println("Failed to obtain time from NTP!");
-    // 你也可以在这里重试或做其他处理
-  } else {
-    Serial.println("Time sync with NTP successful.");
-  }
-
-  Serial.println("=== Menu via Serial Input ===");
-  Serial.println("[W/w] = Up, [S/s] = Down, [E/e] = Enter");
-  Serial.println("[Space] in INIT to switch to MAIN_MENU");
-  Serial.println("==================================");
-  initOled();
-  initFace();
-  initStateMachine();
-}
-
-void loop() {
-    // 声明一个 tm 结构体来接收时间
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo)) {
-      // 若成功获取
-      currentHour   = timeinfo.tm_hour;
-      currentMinute = timeinfo.tm_min;
-      currentSecond = timeinfo.tm_sec;
-    } else {
-      Serial.println("Failed to get time, will try again...");
+    taskCount = 0;
+    Serial.println("Pending Reminders:");
+    for (JsonVariant task : reminderArray)
+    {
+        if (taskCount < 10)
+        {
+            reminders[taskCount] = task.as<String>();
+            Serial.println("- " + reminders[taskCount]);
+            taskCount++;
+        }
     }
-    update(); //get input and update state
-    currentState = getState();
-    render(currentState);//渲染图像
-
+    Serial.println("Type 'done task_name' to complete a reminder.");
 }
 
+void completeReminder(String task)
+{
+    DynamicJsonDocument doc(256);
+    doc["done"] = task;
+
+    String requestBody;
+    serializeJson(doc, requestBody);
+    webSocket.sendTXT(requestBody); // Send completion message to the server
+
+    Serial.println("Task marked as completed: " + task);
+}
+
+void webSocketEvent(WStype_t type, uint8_t *payload, size_t length)
+{
+    switch (type)
+    {
+    case WStype_TEXT:
+        Serial.println("New reminder update received!");
+        parseReminders((char *)payload);
+        break;
+    case WStype_DISCONNECTED:
+        Serial.println("WebSocket Disconnected");
+        break;
+    case WStype_CONNECTED:
+        Serial.println("WebSocket Connected to Server");
+        break;
+    }
+}
+
+
+void setup()
+{
+    Serial.begin(115200);
+    WiFi.begin(ssid, password);
+
+    while (WiFi.status() != WL_CONNECTED)
+    {
+        delay(1000);
+        Serial.println("Connecting to WiFi...");
+    }
+    Serial.println("Connected to WiFi");
+
+    webSocket.begin(serverIP,serverPort, "/");
+    webSocket.onEvent(webSocketEvent);
+}
+
+
+void loop()
+{
+    webSocket.loop();
+
+    if (Serial.available() > 0)
+    {
+        String input = Serial.readStringUntil('\n');
+        input.trim(); // Remove whitespace
+
+        if (input.startsWith("done "))
+        {
+            String task = input.substring(5); // Extract task name
+            completeReminder(task);
+        }
+        else
+        {
+            Serial.println("Invalid input. Type 'done task_name' to complete a reminder.");
+        }
+    }
+
+    delay(100);
+}

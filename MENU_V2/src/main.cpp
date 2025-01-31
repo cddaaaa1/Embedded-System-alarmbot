@@ -1,100 +1,93 @@
-#include <WiFi.h>
-#include <HTTPClient.h>
-#include <ArduinoJson.h>
+#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 
-#define WIFI_SSID "VM0459056"
-#define WIFI_PASSWORD "p6zTqmm6vxqc"
-#define SERVER_URL "http://192.168.0.27:5000"
+#include "MENU/StateMachine.h"
+#include "MENU/DisplayManager.h"
 
-void connectWiFi() {
-    Serial.print("Connecting to WiFi...");
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(1000);
-        Serial.print(".");
-    }
-    Serial.println("\nConnected to WiFi!");
-}
+#include <WiFi.h>      // ESP32 Wi-Fi库
+#include <time.h>      // time.h 库 (ESP32内置)
 
-// Function to mark a reminder as completed
-void completeReminder(String task) {
-    if (WiFi.status() == WL_CONNECTED) {
-        HTTPClient http;
-        http.begin(String(SERVER_URL) + "/update_reminder");
-        http.addHeader("Content-Type", "application/json");
+#include "REMINDER/reminder.h"
 
-        // Create JSON payload
-        DynamicJsonDocument doc(200);
-        doc["task"] = task;
-        String payload;
-        serializeJson(doc, payload);
+// const char* ssid     = "201WI-FI";
+// const char* password = "123456789";
+const char* ssid     = "VM0459056";
+const char* password = "p6zTqmm6vxqc";
+// 2) 时区和夏令时设置
+//    例如：中国一般是UTC+8，不用夏令时 => gmtOffset=8小时，daylightOffset=0
+//    若你在其他时区，请自行调整。
 
-        int httpResponseCode = http.POST(payload);
-        if (httpResponseCode == 200) {
-            Serial.println("Task marked as completed: " + task);
-        } else {
-            Serial.println("Failed to update task. HTTP Response Code: " + String(httpResponseCode));
-        }
-        http.end();
-    }
-}
+const long gmtOffset_sec = 0;         // 英国 GMT+0
+const int daylightOffset_sec = 3600; // 英国夏令时偏移为 +1 小时
+// 3) NTP服务器地址，可用"pool.ntp.org"或地区服务器
+const char* ntpServer = "pool.ntp.org";
 
-// Function to get reminders from the server
-void getReminders() {
-    if (WiFi.status() == WL_CONNECTED) {
-        HTTPClient http;
-        http.begin(String(SERVER_URL) + "/get_reminders");
-        int httpResponseCode = http.GET();
+int currentHour   = 0;
+int currentMinute = 0;
+int currentSecond = 0;
 
-        if (httpResponseCode == 200) {
-            String response = http.getString();
-            Serial.println("Reminders: " + response);
-
-            DynamicJsonDocument doc(1024);
-            deserializeJson(doc, response);
-
-            for (JsonVariant reminder : doc.as<JsonArray>()) {
-                String task = reminder["task"];
-                String status = reminder["status"];
-
-                if (status == "pending") {
-                    Serial.println("Pending Reminder: " + task);
-                }
-            }
-        } else {
-            Serial.println("Error fetching reminders. HTTP Response Code: " + String(httpResponseCode));
-        }
-        http.end();
-    }
-}
-
-// Function to read user input from serial monitor and mark the task as complete
-void readSerialInput() {
-    if (Serial.available() > 0) {
-        String input = Serial.readStringUntil('\n'); // Read input until newline
-        input.trim(); // Remove any trailing newline or spaces
-
-        if (input.startsWith("done ")) {
-            String task = input.substring(5); // Extract task name after "done "
-            if (task.length() > 0) {
-                Serial.println("User input received: Marking task as complete -> " + task);
-                completeReminder(task);
-            } else {
-                Serial.println("Error: No task name provided.");
-            }
-        } else {
-            Serial.println("Invalid input format. Use: done TASK_NAME");
-        }
-    }
-}
+// Timer for getReminders (10 seconds interval)
+unsigned long lastReminderCheck = 0;
+const unsigned long reminderInterval = 10000; // 10 seconds in milliseconds
 
 void setup() {
-    Serial.begin(115200);
-    connectWiFi();
+  Serial.begin(115200);
+  // 连接WiFi
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  Serial.printf("Connecting to WiFi: %s\n", ssid);
+
+  // 等待WiFi连上
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi connected!");
+
+  // 使用configTime函数设置时区和NTP服务器
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+
+  // 检查是否成功获取时间
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    Serial.println("Failed to obtain time from NTP!");
+    // 你也可以在这里重试或做其他处理
+  } else {
+    Serial.println("Time sync with NTP successful.");
+  }
+
+  Serial.println("=== Menu via Serial Input ===");
+  Serial.println("[W/w] = Up, [S/s] = Down, [E/e] = Enter");
+  Serial.println("[Space] in INIT to switch to MAIN_MENU");
+  Serial.println("==================================");
+  initOled();
+  initFace();
+  initStateMachine();
 }
 
 void loop() {
-    getReminders();
-    readSerialInput();  // Check for user input from serial
-    delay(5000);  // Check every 5 seconds
+    // 声明一个 tm 结构体来接收时间
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+      // 若成功获取
+      currentHour   = timeinfo.tm_hour;
+      currentMinute = timeinfo.tm_min;
+      currentSecond = timeinfo.tm_sec;
+    } else {
+      Serial.println("Failed to get time, will try again...");
+    }
+    update(); //get input and update state
+    currentState = getState();
+    render(currentState);//渲染图像
+
+    // Call getReminders() only if 10 seconds have passed
+    if (millis() - lastReminderCheck >= reminderInterval) {
+        lastReminderCheck = millis(); // Reset the timer
+        getReminders();
+    }
+    readSerialInput();
+
 }
+

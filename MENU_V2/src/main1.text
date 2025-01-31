@@ -1,4 +1,3 @@
-#include "REMINDER/reminder.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -87,4 +86,15 @@ void readSerialInput() {
             Serial.println("Invalid input format. Use: done TASK_NAME");
         }
     }
+}
+
+void setup() {
+    Serial.begin(115200);
+    connectWiFi();
+}
+
+void loop() {
+    getReminders();
+    readSerialInput();  // Check for user input from serial
+    delay(5000);  // Check every 5 seconds
 }

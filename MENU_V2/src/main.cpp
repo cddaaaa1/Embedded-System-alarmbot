@@ -6,108 +6,95 @@
 #include "MENU/StateMachine.h"
 #include "MENU/DisplayManager.h"
 
-#include <WiFi.h> // ESP32 Wi-Fi库
-#include <time.h> // time.h 库 (ESP32内置)
+#include <WiFi.h>      // ESP32 Wi-Fi库
+#include <time.h>      // time.h 库 (ESP32内置)
 #include <WiFi.h>
-#include <WebSocketsClient.h>
+#include <ArduinoWebsockets.h>
 #include <ArduinoJson.h>
+#include <HTTPClient.h>
 
-const char* ssid = "VM0459056";
-const char* password = "p6zTqmm6vxqc";
-const char* serverIP = "192.168.0.27"; // Replace with your PC's local IP
-const int serverPort = 8765;            // WebSocket server port
+#define WIFI_SSID "VM0459056"
+#define WIFI_PASSWORD "p6zTqmm6vxqc"
+#define SERVER_URL "http://192.168.0.27:5000"
+#define WEBSOCKET_URL "ws://192.168.0.27:8080"  // WebSocket URL
 
-WebSocketsClient webSocket;
-String reminders[10]; // Store up to 10 reminders
-int taskCount = 0;    // Track active reminders
-bool isConnected = false;
+using namespace websockets;
 
-void parseReminders(String jsonResponse)
-{
-    DynamicJsonDocument doc(1024);
-    deserializeJson(doc, jsonResponse);
-    JsonArray reminderArray = doc["reminders"];
+WebsocketsClient client;
 
-    taskCount = 0;
-    Serial.println("Pending Reminders:");
-    for (JsonVariant task : reminderArray)
-    {
-        if (taskCount < 10)
-        {
-            reminders[taskCount] = task.as<String>();
-            Serial.println("- " + reminders[taskCount]);
-            taskCount++;
-        }
-    }
-    Serial.println("Type 'done task_name' to complete a reminder.");
-}
-
-void completeReminder(String task)
-{
-    DynamicJsonDocument doc(256);
-    doc["done"] = task;
-
-    String requestBody;
-    serializeJson(doc, requestBody);
-    webSocket.sendTXT(requestBody); // Send completion message to the server
-
-    Serial.println("Task marked as completed: " + task);
-}
-
-void webSocketEvent(WStype_t type, uint8_t *payload, size_t length)
-{
-    switch (type)
-    {
-    case WStype_TEXT:
-        Serial.println("New reminder update received!");
-        parseReminders((char *)payload);
-        break;
-    case WStype_DISCONNECTED:
-        Serial.println("WebSocket Disconnected");
-        break;
-    case WStype_CONNECTED:
-        Serial.println("WebSocket Connected to Server");
-        break;
-    }
-}
-
-
-void setup()
-{
-    Serial.begin(115200);
-    WiFi.begin(ssid, password);
-
-    while (WiFi.status() != WL_CONNECTED)
-    {
+void connectWiFi() {
+    Serial.print("Connecting to WiFi...");
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    while (WiFi.status() != WL_CONNECTED) {
         delay(1000);
-        Serial.println("Connecting to WiFi...");
+        Serial.print(".");
     }
-    Serial.println("Connected to WiFi");
-
-    webSocket.begin(serverIP,serverPort, "/");
-    webSocket.onEvent(webSocketEvent);
+    Serial.println("\nConnected to WiFi!");
 }
 
+// Function to notify the server that a task is completed
+void completeReminder(String task) {
+    if (WiFi.status() == WL_CONNECTED) {
+        HTTPClient http;
+        http.begin(String(SERVER_URL) + "/update_reminder");
+        http.addHeader("Content-Type", "application/json");
 
-void loop()
-{
-    webSocket.loop();
+        // Create JSON payload
+        DynamicJsonDocument doc(200);
+        doc["task"] = task;
+        String payload;
+        serializeJson(doc, payload);
 
-    if (Serial.available() > 0)
-    {
-        String input = Serial.readStringUntil('\n');
-        input.trim(); // Remove whitespace
-
-        if (input.startsWith("done "))
-        {
-            String task = input.substring(5); // Extract task name
-            completeReminder(task);
+        int httpResponseCode = http.POST(payload);
+        if (httpResponseCode == 200) {
+            Serial.println("Task completed: " + task);
+        } else {
+            Serial.println("Failed to update task. HTTP Response Code: " + String(httpResponseCode));
         }
-        else
-        {
-            Serial.println("Invalid input. Type 'done task_name' to complete a reminder.");
-        }
+        http.end();
     }
+}
 
-    delay(100);
+// WebSocket event handler
+void onMessage(WebsocketsMessage message) {
+    Serial.println("New Reminder Received: " + message.data());
+
+    // Parse JSON reminder
+    DynamicJsonDocument doc(200);
+    deserializeJson(doc, message.data());
+    String task = doc["task"];
+
+    // Simulate executing the task
+    Serial.println("Executing Task: " + task);
+    delay(5000);  // Simulate execution
+
+    // Notify server task is completed
+    completeReminder(task);
+}
+
+// Connect WebSocket
+void connectWebSocket() {
+    Serial.print("🔄 Attempting WebSocket connection to: ");
+    Serial.println(WEBSOCKET_URL);
+
+    if (client.connect(WEBSOCKET_URL)) {
+        Serial.println("✅ WebSocket Connected!");
+        client.onMessage(onMessage);
+    } else {
+        Serial.println("❌ WebSocket Connection Failed. Retrying in 5s...");
+        delay(5000);
+        connectWebSocket();
+    }
+}
+
+void setup() {
+    Serial.begin(115200);
+    connectWiFi();
+    connectWebSocket();
+}
+
+void loop() {
+    if (client.available()) {
+        client.poll();
+    }
 }

@@ -1,52 +1,66 @@
-import asyncio
-import websockets
+import eventlet
+eventlet.monkey_patch()  # Must be the first import
+
+from flask import Flask, request, jsonify
+from flask_socketio import SocketIO
 import json
+import os
 
-connected_clients = set()  # Track connected ESP32 devices
-reminders = []  # Store reminders in memory
+app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")  # Force eventlet for WebSockets
 
-async def send_reminders():
-    """Send all pending reminders to connected ESP32 clients."""
-    if reminders and connected_clients:
-        message = json.dumps({"reminders": reminders})
-        await asyncio.wait([client.send(message) for client in connected_clients])
+REMINDER_FILE = "reminders.json"
 
-async def handle_client(websocket, path):
-    """Handle incoming ESP32 connections."""
-    print(f"ESP32 Connected: {websocket.remote_address}")
-    connected_clients.add(websocket)
+if not os.path.exists(REMINDER_FILE):
+    with open(REMINDER_FILE, "w") as f:
+        json.dump([], f)
 
-    try:
-        async for message in websocket:
-            data = json.loads(message)
+def load_reminders():
+    with open(REMINDER_FILE, "r") as f:
+        return json.load(f)
 
-            if "done" in data:
-                task_done = data["done"]
-                reminders[:] = [task for task in reminders if task != task_done]
-                print(f"Task '{task_done}' completed. Updated reminders: {reminders}")
-                await send_reminders()
-    except websockets.exceptions.ConnectionClosedError:
-        print(f"ESP32 Disconnected: {websocket.remote_address}")
-    finally:
-        connected_clients.discard(websocket)  # Properly remove client
+def save_reminders(reminders):
+    with open(REMINDER_FILE, "w") as f:
+        json.dump(reminders, f, indent=4)
 
-async def main():
-    """Start the WebSocket server."""
-    server = await websockets.serve(handle_client, "192.168.0.27", 8765)
-    print("WebSocket server started on ws://<your_pc_ip>:8765")
-    await server.wait_closed()
+@app.route("/")
+def home():
+    return "ESP32 WebSocket Server Running!"
 
-async def add_reminder():
-    """Accept user input and send new reminders to ESP32."""
-    while True:
-        task = input("Enter a reminder: ").strip()
-        if task:
-            reminders.append(task)
-            print(f"Reminder '{task}' added.")
-            await send_reminders()  # Send updated list to ESP32
+@app.route("/add_reminder", methods=["POST"])
+def add_reminder():
+    data = request.json
+    reminders = load_reminders()
+    new_reminder = {"task": data["task"], "status": "pending"}
+    reminders.append(new_reminder)
+    save_reminders(reminders)
 
-# Run server and user input handling concurrently
-async def start():
-    await asyncio.gather(main(), add_reminder())
+    # Notify ESP32 via WebSocket
+    socketio.emit("new_reminder", new_reminder)
+    
+    return jsonify({"message": "Reminder added successfully"})
 
-asyncio.run(start())
+@app.route("/update_reminder", methods=["POST"])
+def update_reminder():
+    data = request.json
+    reminders = load_reminders()
+    for reminder in reminders:
+        if reminder["task"] == data["task"]:
+            reminder["status"] = "completed"
+    save_reminders(reminders)
+    return jsonify({"message": "Reminder updated"})
+
+@socketio.on("connect")
+def handle_connect():
+    print("✅ ESP32 connected via WebSocket")
+
+@socketio.on("disconnect")
+def handle_disconnect():
+    print("❌ ESP32 disconnected")
+
+@socketio.on("message")
+def handle_message(message):
+    print(f"📩 Received from ESP32: {message}")
+
+if __name__ == "__main__":
+    socketio.run(app, host="0.0.0.0", port=8080, debug=True)

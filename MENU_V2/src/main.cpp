@@ -30,7 +30,7 @@ int currentSecond = 0;
 
 // Timer for getReminders (10 seconds interval)
 unsigned long lastReminderCheck = 0;
-const unsigned long reminderInterval = 10000; // 10 seconds in milliseconds
+const unsigned long reminderInterval = 20000; // 10 seconds in milliseconds
 
 void setup() {
   Serial.begin(115200);
@@ -65,6 +65,12 @@ void setup() {
   initOled();
   initFace();
   initStateMachine();
+
+  if (!SPIFFS.begin(true)) {  // `true` forces formatting if mount fails
+        Serial.println("SPIFFS Mount Failed!");
+        return;
+    }
+    Serial.println("SPIFFS Mounted Successfully!");
 }
 
 void loop() {
@@ -85,7 +91,7 @@ void loop() {
     // Call getReminders() only if 10 seconds have passed
     if (millis() - lastReminderCheck >= reminderInterval) {
         lastReminderCheck = millis(); // Reset the timer
-        getReminders();
+        syncCompletedTodos();
     }
     readSerialInput();
 
